@@ -2255,3 +2255,138 @@ No TBDs, TODOs, or "similar to" references found. All code blocks are complete.
 - `OntologyRegistry.scan()` reads YAML directly — no dependency on `load_process_config`. ✅ (independent)
 - CLI `validate` command calls `load_process_config` + `validate_config` — both defined in Task 4. ✅
 - CLI `register` command calls `scan_and_register` — defined in Task 8. ✅
+
+---
+
+## Plan Amendments (Engineering Review 반영)
+
+The following changes were added after the engineering review (gstack /plan-eng-review, 2026-06-05):
+
+**T1 (D1) — Task 10에 git tag v0.1.0 추가:**
+- Task 10 Step 4를 `git tag v0.1.0 && git push --tags` 포함으로 수정
+- README 설치 패턴을 `pip install git+https://github.com/Jintheexplorer/universal-os.git@v0.1.0`으로 변경
+
+**T2 (D2) — config.yaml에 object_types 필드 추가:**
+- `tests/fixtures/valid_process_config.yaml`에 `object_types: [JournalEntry, AssetSnapshot, FinancialMetrics, Statement]` 추가
+- `registry.py`에서 `_PROCESS_TYPE_OBJECTS` 하드코딩 제거, config의 `object_types` 필드를 읽어 등록
+- 테스트: config에 `object_types`가 없으면 빈 리스트로 fallback 테스트 추가
+
+**T3 (D3) — BaseProcess.run() stage enabled:false skip:**
+```python
+# Task 5 수정
+def run(self, ctx: ProcessContext) -> StageResult:
+    stage_map = [
+        ("perceive", self.perceive),
+        ("plan", self.plan),
+        ("act", self.act),
+        ("reflect", self.reflect),
+    ]
+    for stage_name, stage_fn in stage_map:
+        if ctx.config:
+            stage_cfg = ctx.config.loop.get(stage_name, {})
+            if isinstance(stage_cfg, dict) and stage_cfg.get("enabled") is False:
+                continue
+        try:
+            result = stage_fn(ctx)
+        except Exception as e:
+            return StageResult(ok=False, error=str(e))  # T6: wrap uncaught exceptions
+        if not result.ok:
+            return result
+    return StageResult(ok=True, data=ctx.state)
+```
+
+**T4 (D4) — universalos update CLI 커맨드:**
+```python
+# Task 9 cli/main.py에 추가
+@cli.command()
+@click.option("--version", default=None, help="Target version tag (e.g. v0.1.1). Defaults to latest.")
+def update(version: str):
+    """Upgrade universal-os to the latest (or specified) version."""
+    import subprocess, sys
+    ref = version or "main"
+    target = f"git+https://github.com/Jintheexplorer/universal-os.git@{ref}"
+    click.echo(f"Upgrading universal-os from {target} ...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", target],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        click.echo("✅ universal-os upgraded successfully.")
+    else:
+        click.echo(f"❌ Upgrade failed:\n{result.stderr}", err=True)
+        raise SystemExit(1)
+```
+
+**T5 (D5) — Task 5.5: RecordToReportProcess + LogEntryProcess skeleton:**
+(Task 5 이후에 삽입)
+
+```
+### Task 5.5: Concrete process skeletons
+
+Files:
+- Create: universal_os/process_types/record_to_report.py
+- Create: universal_os/process_types/log_entry.py
+- Create: tests/test_process_r2r.py
+- Create: tests/test_process_log_entry.py
+```
+
+```python
+# universal_os/process_types/record_to_report.py
+from universal_os.process_types.base import BaseProcess, ProcessContext, StageResult
+
+class RecordToReportProcess(BaseProcess):
+    """Skeleton: PERCEIVE(load+validate) → PLAN(minimal) → ACT(calculate+store) → REFLECT(report)."""
+
+    def perceive(self, ctx: ProcessContext) -> StageResult:
+        ctx.state["stage"] = "perceive"
+        return StageResult(ok=True, data={"status": "perceived"})
+
+    def act(self, ctx: ProcessContext) -> StageResult:
+        ctx.state["stage"] = "act"
+        return StageResult(ok=True, data={"status": "acted"})
+```
+
+```python
+# universal_os/process_types/log_entry.py
+from universal_os.process_types.base import BaseProcess, ProcessContext, StageResult
+
+class LogEntryProcess(BaseProcess):
+    """Skeleton: PERCEIVE(validate) → ACT(append to SSOT). PLAN+REFLECT disabled via config."""
+
+    def perceive(self, ctx: ProcessContext) -> StageResult:
+        ctx.state["stage"] = "perceive"
+        return StageResult(ok=True, data={"status": "validated"})
+
+    def act(self, ctx: ProcessContext) -> StageResult:
+        ctx.state["stage"] = "act"
+        return StageResult(ok=True, data={"status": "appended"})
+```
+
+**T6 — BaseProcess.run() 예외 throw wrapping:** T3 코드 블록에 이미 포함.
+
+**T7 (Failure mode) — YAML parse error 명확한 에러 메시지:**
+```python
+# config/loader.py load_process_config() 수정
+import yaml
+try:
+    raw = yaml.safe_load(f)
+except yaml.YAMLError as e:
+    raise ValueError(f"Invalid YAML in process config {path}: {e}") from e
+```
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 issues, 2 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **OUTSIDE VOICE:** Claude subagent (Codex binary unavailable). 5 findings, 1 cross-model tension (D7 패키지 필요성) — resolved in favor of Plan A.
+- **CROSS-MODEL:** D7 tension 해소. LifeOS PRD 제약은 내부 코드 레이아웃 지침이며 cross-OS 외부 라이브러리를 금지하지 않는다.
+- **UNRESOLVED:** 0 unresolved decisions (D1~D7 모두 결정)
+- **VERDICT:** ENG CLEARED — Architecture review passed. 7 implementation amendments (T1~T7) added to plan. Ready to implement.
